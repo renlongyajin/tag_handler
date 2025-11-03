@@ -102,7 +102,7 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_restore = QPushButton("恢复初始", buttons)
         self.btn_copy = QPushButton("复制当前标签", buttons)
         self.btn_paste = QPushButton("粘贴标签到当前", buttons)
-        self.btn_toggle_lock = QPushButton("标记为完成", buttons)
+        self.btn_toggle_lock = QPushButton("锁定标签", buttons)
         for btn in (
             self.btn_add,
             self.btn_retranslate,
@@ -253,11 +253,9 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_add.setEnabled(not locked)
         self.btn_retranslate.setEnabled(not locked)
         self.btn_restore.setEnabled(not locked)
-        self.btn_add.setEnabled(not locked)
-        self.btn_retranslate.setEnabled(not locked)
-        self.btn_restore.setEnabled(not locked)
         self.btn_paste.setEnabled(not locked)
-        self.btn_toggle_lock.setText("取消标记" if locked else "标记为完成")
+        lock_text = "🔒 取消锁定" if locked else "🔓 锁定标签"
+        self.btn_toggle_lock.setText(lock_text)
         self.btn_toggle_lock.setEnabled(self.current_record is not None)
         if hasattr(self, "action_undo"):
             self.action_undo.setEnabled(not locked)
@@ -267,11 +265,8 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_copy.setEnabled(True)
 
     def _editing_locked_warning(self) -> None:
-        QMessageBox.information(
-            self,
-            "文件已锁定",
-            "该文件已标记为完成，如需继续编辑请先取消标记。",
-        )
+        self.statusBar().showMessage("🔒 当前文件已锁定，如需继续编辑请先取消标记。", 3000)
+
     def copy_current_tags(self) -> None:
         if not self.current_tags:
             QMessageBox.information(self, "复制标签", "当前没有可复制的标签。")
@@ -279,9 +274,8 @@ class TagEditorMainWindow(QMainWindow):
         self.copied_pairs = [
             (entry.english, entry.chinese) for entry in self.current_tags if entry.english.strip()
         ]
-        clipboard = QApplication.clipboard()
-        clipboard.setText(", ".join(english for english, _ in self.copied_pairs))
-        QMessageBox.information(self, "复制标签", "已复制当前标签（英文）到剪贴板。")
+        QApplication.clipboard().setText(", ".join(en for en, _ in self.copied_pairs))
+        self.statusBar().showMessage("已复制当前标签（英文）到剪贴板。", 3000)
 
     def paste_tags_into_current(self) -> None:
         if not self.current_record:
@@ -300,12 +294,11 @@ class TagEditorMainWindow(QMainWindow):
         if not pairs:
             QMessageBox.information(self, "粘贴标签", "剪贴板中没有可用的标签。")
             return
-        command = ReplaceAllTagsCommand(self, pairs)
-        self.undo_stack.push(command)
+        self.undo_stack.push(ReplaceAllTagsCommand(self, pairs))
 
     def toggle_lock_current(self) -> None:
         if not self.current_record:
-            QMessageBox.information(self, "标记标签", "请先打开一个标签文件。")
+            QMessageBox.information(self, "锁定标签", "请先打开一个标签文件。")
             return
         new_state = not self.current_locked
         if new_state and not self.undo_stack.isClean():
@@ -314,17 +307,17 @@ class TagEditorMainWindow(QMainWindow):
         try:
             set_locked(self.current_record.tag_path, new_state)
         except OSError as exc:
-            QMessageBox.warning(self, "标记标签", f"操作失败：{exc}")
+            QMessageBox.warning(self, "锁定标签", f"操作失败：{exc}")
             return
         self.current_locked = new_state
         self.records[self.current_index].locked = new_state
         if new_state:
             self.undo_stack.clear()
             self.undo_stack.setClean()
-        # state_text = "已标记为完成，当前文件已锁定。" if new_state else "已取消标记，当前文件可编辑。"
+        icon_msg = "🔒 已锁定当前文件" if new_state else "🔓 已解除锁定，可继续编辑"
         self._apply_lock_state()
         self._update_status()
-        # QMessageBox.information(self, "标记标签", state_text)
+        self.statusBar().showMessage(icon_msg, 3000)
 
     def bulk_delete_tag(self) -> None:
         if not self.records:
@@ -499,19 +492,19 @@ class TagEditorMainWindow(QMainWindow):
 
     def _update_status(self) -> None:
         if self.current_index is None or not self.records:
-            self.file_label.setText("\u5f53\u524d\u6587\u4ef6\uff1a\u65e0")
-            self.statusBar().showMessage("\u672a\u52a0\u8f7d\u6587\u4ef6")
+            self.file_label.setText("当前文件：无")
+            self.statusBar().showMessage("未加载文件")
             return
         record = self.records[self.current_index]
         prefix = "* " if not self.undo_stack.isClean() else ""
-        tag_name = record.tag_path.name if record.tag_path else "\u65e0\u6807\u7b7e\u6587\u4ef6"
-        state_text = "\u5df2\u9501\u5b9a" if self.current_locked else "\u53ef\u7f16\u8f91"
-        self.file_label.setText(f"\u5f53\u524d\u6587\u4ef6\uff1a{tag_name}\uff08{state_text}\uff09")
+        tag_name = record.tag_path.name if record.tag_path else "无标签文件"
+        state_text = "🔒 已锁定" if self.current_locked else "可编辑"
+        self.file_label.setText(f"当前文件：{tag_name}（{state_text}）")
         message = (
             f"{prefix}{record.base_name} ({self.current_index + 1}/{len(self.records)}) | "
-            f"\u6807\u7b7e {len(self.current_tags)} | \u7f29\u653e {self.viewer.zoom_percent()}% | "
-            f"\u7ffb\u8bd1\u94fe {self.translator.describe_pipeline('en', 'zh')} | "
-            f"\u540e\u7f00 {self.tag_suffix} | \u72b6\u6001 {state_text}"
+            f"标签 {len(self.current_tags)} | 缩放 {self.viewer.zoom_percent()}% | "
+            f"翻译链 {self.translator.describe_pipeline('en', 'zh')} | "
+            f"后缀 {self.tag_suffix} | 状态 {state_text}"
         )
         self.statusBar().showMessage(message)
 

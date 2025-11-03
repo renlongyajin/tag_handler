@@ -1,0 +1,35 @@
+﻿
+>     def _apply_lock_state(self) -> None:
+          locked = self.current_locked
+          for widget in self.tag_widgets:
+              widget.set_locked(locked)
+          self.btn_add.setEnabled(not locked)
+          self.btn_retranslate.setEnabled(not locked)
+          self.btn_restore.setEnabled(not locked)
+          self.btn_paste.setEnabled(not locked)
+          lock_text = "🔒 取消标记" if locked else "🔓 标记为完成"
+          self.btn_toggle_lock.setText(lock_text)
+          self.btn_toggle_lock.setEnabled(self.current_record is not None)
+          if hasattr(self, "action_undo"):
+              self.action_undo.setEnabled(not locked)
+          if hasattr(self, "action_redo"):
+              self.action_redo.setEnabled(not locked)
+          # 只读状态下仍允许复制标签
+          self.btn_copy.setEnabled(True)
+  
+      def _editing_locked_warning(self) -> None:
+          self.statusBar().showMessage("🔒 当前文件已锁定，如需继续编辑请先取消标记。", 3000)
+  
+      def paste_tags_into_current(self) -> None:
+          if not self.current_record:
+              QMessageBox.information(self, "粘贴标签", "请先打开一个标签文件。")
+              return
+          if self.current_locked:
+              self._editing_locked_warning()
+              return
+          pairs = list(self.copied_pairs)
+          if not pairs:
+              clipboard_text = QApplication.clipboard().text()
+
+
+
