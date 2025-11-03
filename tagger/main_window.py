@@ -33,6 +33,7 @@ from PyQt5.QtWidgets import (
     QToolBar,
     QToolButton,
     QUndoStack,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -169,6 +170,10 @@ class TagEditorMainWindow(QMainWindow):
         lock_all_action = QAction("锁定全部", self)
         lock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(True))
         toolbar.addAction(lock_all_action)
+
+        range_lock_action = QAction("范围锁定", self)
+        range_lock_action.triggered.connect(self._lock_range_dialog)
+        toolbar.addAction(range_lock_action)
 
         unlock_all_action = QAction("解锁全部", self)
         unlock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(False))
@@ -455,6 +460,73 @@ class TagEditorMainWindow(QMainWindow):
         self._apply_lock_state()
         self._update_status()
         self.statusBar().showMessage(icon_msg, 3000)
+
+    def _lock_range_dialog(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "范围锁定", "当前没有可处理的文件。")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("范围锁定")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        start_spin = QSpinBox(dialog)
+        start_spin.setRange(1, len(self.records))
+        default_start = (self.current_index + 1) if self.current_index is not None else 1
+        start_spin.setValue(default_start)
+        end_spin = QSpinBox(dialog)
+        end_spin.setRange(1, len(self.records))
+        end_spin.setValue(len(self.records))
+        form.addRow("起始序号：", start_spin)
+        form.addRow("结束序号：", end_spin)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        start = start_spin.value()
+        end = end_spin.value()
+        if start > end:
+            start, end = end, start
+
+        if (
+            self.current_record
+            and start <= self.current_index + 1 <= end
+            and not self.save_current_file(auto=True)
+        ):
+            return
+
+        success = 0
+        failures: List[str] = []
+        for idx in range(start - 1, end):
+            record = self.records[idx]
+            try:
+                set_locked(record.tag_path, True)
+                record.locked = True
+                success += 1
+            except OSError as exc:
+                failures.append(f"{record.base_name}: {exc}")
+
+        if self.current_record and start - 1 <= self.current_index <= end - 1:
+            self.current_locked = True
+            self.records[self.current_index].locked = True
+        elif self.current_record:
+            self.current_locked = is_locked(self.current_record.tag_path)
+            self.records[self.current_index].locked = self.current_locked
+
+        self._apply_lock_state()
+        self._update_status()
+
+        total = end - start + 1
+        message = f"范围锁定完成：{success}/{total} 个文件已锁定。"
+        if failures:
+            failure_list = "\n".join(failures[:10])
+            message += f"\n\n失败文件（最多显示 10 条）：\n{failure_list}"
+        QMessageBox.information(self, "范围锁定", message)
 
     def _lock_or_unlock_all(self, locked: bool) -> None:
         if not self.records:
