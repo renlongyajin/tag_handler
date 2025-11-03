@@ -58,23 +58,38 @@ def download_model():
 
 def load_model():
     global model, vocab
-    
+
     # Download model if needed
     model_path = download_model()
-    
-    # Load vocabulary
+
+    # 导入 Vocabulary
+    from train.train_text import Vocabulary
+
+    # 注册为 __main__.Vocabulary 以匹配保存时命名空间
+    import sys, torch.serialization
+    sys.modules['__main__'].Vocabulary = Vocabulary
+
+    # ✅ 添加安全白名单
+    torch.serialization.add_safe_globals([Vocabulary])
+
+    # 加载词汇表
     vocab = Vocabulary.load(f'{env}/data/e621_vocabulary.pkl')
-    
-    # Initialize model
+
+    # 初始化模型
     model = ImageLabelModel(len(vocab)).to(device)
-    
-    # Load checkpoint
-    checkpoint = torch.load(model_path, map_location=device)
+
+    # ✅ 加载模型权重（不安全方式）
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+
+
+    # 应用权重
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
-    
-    print("Model loaded successfully")
-    print(f"Using device: {device}")
+
+    print("✅ Model loaded successfully")
+    print(f"🖥️ Using device: {device}")
+
+
 
 
 

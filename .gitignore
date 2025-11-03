@@ -15,7 +15,7 @@
 *.pth
 *.png
 /venv
-
+/data
 !demo/demo.png
 
 # User-specific files (MonoDevelop/Xamarin Studio)
