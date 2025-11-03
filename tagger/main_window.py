@@ -4,6 +4,8 @@ import itertools
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+import json
+
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
@@ -15,6 +17,7 @@ from PyQt5.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -22,6 +25,7 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QStatusBar,
     QToolBar,
+    QToolButton,
     QUndoStack,
     QVBoxLayout,
     QWidget,
@@ -103,6 +107,7 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_copy = QPushButton("复制当前标签", buttons)
         self.btn_paste = QPushButton("粘贴标签到当前", buttons)
         self.btn_toggle_lock = QPushButton("锁定标签", buttons)
+        self.btn_next_unlocked = QPushButton("下一个未锁定", buttons)
         for btn in (
             self.btn_add,
             self.btn_retranslate,
@@ -110,6 +115,7 @@ class TagEditorMainWindow(QMainWindow):
             self.btn_copy,
             self.btn_paste,
             self.btn_toggle_lock,
+            self.btn_next_unlocked,
         ):
             btn_layout.addWidget(btn)
         tag_layout.addWidget(buttons)
@@ -134,7 +140,7 @@ class TagEditorMainWindow(QMainWindow):
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
         for text, slot in (
-            ("打开目录", self.choose_directory),
+            ("选目录", self.choose_directory),
             ("打开标签文件", self.open_tag_file),
             ("保存", self.save_current_file),
         ):
@@ -151,13 +157,25 @@ class TagEditorMainWindow(QMainWindow):
         lock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(True))
         toolbar.addAction(lock_all_action)
 
-        unlock_all_action = QAction("解除全部锁定", self)
+        unlock_all_action = QAction("解锁全部", self)
         unlock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(False))
         toolbar.addAction(unlock_all_action)
 
         stats_action = QAction("锁定统计", self)
         stats_action.triggered.connect(self._show_lock_stats)
         toolbar.addAction(stats_action)
+
+        export_menu = QMenu("导出", self)
+        export_all_action = export_menu.addAction("导出全部标签文件")
+        export_all_action.triggered.connect(self._export_all_tags)
+        export_locked_action = export_menu.addAction("导出已锁定标签文件")
+        export_locked_action.triggered.connect(self._export_locked_tags)
+
+        export_button = QToolButton(self)
+        export_button.setText("导出")
+        export_button.setPopupMode(QToolButton.InstantPopup)
+        export_button.setMenu(export_menu)
+        toolbar.addWidget(export_button)
 
         self.action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         toolbar.addAction(self.action_undo)
@@ -171,7 +189,6 @@ class TagEditorMainWindow(QMainWindow):
         toolbar.addAction(suffix_action)
 
         self.setStatusBar(QStatusBar(self))
-
     def _bind_signals(self) -> None:
         self.btn_add.clicked.connect(self._handle_add)
         self.btn_retranslate.clicked.connect(self._handle_retranslate)
@@ -179,6 +196,7 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_copy.clicked.connect(self.copy_current_tags)
         self.btn_paste.clicked.connect(self.paste_tags_into_current)
         self.btn_toggle_lock.clicked.connect(self.toggle_lock_current)
+        self.btn_next_unlocked.clicked.connect(self.open_next_unlocked)
         self.viewer.zoomChanged.connect(lambda _: self._update_status())
 
     def _bind_shortcuts(self) -> None:
@@ -187,6 +205,7 @@ class TagEditorMainWindow(QMainWindow):
         QShortcut(QKeySequence("Ctrl+S"), self, activated=self.save_current_file)
         QShortcut(QKeySequence("Ctrl+O"), self, activated=self.choose_directory)
         QShortcut(QKeySequence("Ctrl+Shift+O"), self, activated=self.open_tag_file)
+        QShortcut(QKeySequence("Ctrl+L"), self, activated=self.toggle_lock_current)
 
     def choose_directory(self, initial: bool = False) -> None:
         start = str(self.root_dir or DEFAULT_DIRECTORY)
@@ -266,6 +285,7 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_retranslate.setEnabled(not locked)
         self.btn_restore.setEnabled(not locked)
         self.btn_paste.setEnabled(not locked)
+        self.btn_next_unlocked.setEnabled(bool(self.records))
         lock_text = "🔒 取消锁定" if locked else "🔓 锁定标签"
         self.btn_toggle_lock.setText(lock_text)
         self.btn_toggle_lock.setEnabled(self.current_record is not None)
@@ -391,6 +411,71 @@ class TagEditorMainWindow(QMainWindow):
             ])
         QMessageBox.information(self, "锁定统计", "".join(message_lines))
 
+    def _export_all_tags(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "导出标签", "当前没有可导出的文件。")
+            return
+        default_dir = str(self.root_dir or Path.cwd())
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "选择导出文件", default_dir, "JSON 文件 (*.json)"
+        )
+        if not file_path:
+            return
+        export_data = {}
+        for record in self.records:
+            if (
+                self.current_record
+                and record.tag_path.resolve() == self.current_record.tag_path.resolve()
+            ):
+                tags = [entry.english for entry in self.current_tags if entry.english.strip()]
+            else:
+                tags = read_tags(record.tag_path)
+            export_data[record.base_name] = tags
+        try:
+            with open(file_path, "w", encoding="utf-8") as fp:
+                json.dump(export_data, fp, ensure_ascii=False, indent=2)
+            QMessageBox.information(
+                self,
+                "导出标签",
+                f"已导出 {len(export_data)} 个文件的标签到：\n{file_path}",
+            )
+        except OSError as exc:
+            QMessageBox.warning(self, "导出标签", f"导出失败：{exc}")
+
+    def _export_locked_tags(self) -> None:
+        locked_records = [
+            record for record in self.records if is_locked(record.tag_path)
+        ]
+        if not locked_records:
+            QMessageBox.information(self, "导出已锁定标签", "当前没有已锁定的文件。")
+            return
+        default_dir = str(self.root_dir or Path.cwd())
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "选择导出文件", default_dir, "JSON 文件 (*.json)"
+        )
+        if not file_path:
+            return
+        export_data = {}
+        for record in locked_records:
+            if (
+                self.current_record
+                and record.tag_path.resolve() == self.current_record.tag_path.resolve()
+            ):
+                tags = [entry.english for entry in self.current_tags if entry.english.strip()]
+            else:
+                tags = read_tags(record.tag_path)
+            export_data[record.base_name] = tags
+        try:
+            with open(file_path, "w", encoding="utf-8") as fp:
+                json.dump(export_data, fp, ensure_ascii=False, indent=2)
+            QMessageBox.information(
+                self,
+                "导出已锁定标签",
+                f"已导出 {len(export_data)} 个锁定文件的标签到：\n{file_path}",
+            )
+        except OSError as exc:
+            QMessageBox.warning(self, "导出已锁定标签", f"导出失败：{exc}")
+
     def bulk_delete_tag(self) -> None:
         if not self.records:
             QMessageBox.information(self, "批量删除标签", "当前没有可处理的文件。")
@@ -469,6 +554,19 @@ class TagEditorMainWindow(QMainWindow):
         self._id_counter = itertools.count(len(self.current_tags) + 1)
         self.undo_stack.clear(); self.undo_stack.setClean()
         self.refresh_lists()
+
+    def open_next_unlocked(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "下一个未锁定", "当前没有可用的文件。")
+            return
+        start = 0 if self.current_index is None else self.current_index + 1
+        for idx in range(start, len(self.records)):
+            record = self.records[idx]
+            record.locked = is_locked(record.tag_path)
+            if not record.locked:
+                self.open_index(idx)
+                return
+        QMessageBox.information(self, "下一个未锁定", "后续没有未锁定的文件。")
 
     def next_entry_id(self) -> int:
         return next(self._id_counter)
