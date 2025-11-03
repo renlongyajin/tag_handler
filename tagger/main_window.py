@@ -5,17 +5,23 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 import json
+import re
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QKeySequence
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QGridLayout,
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QMenu,
     QMessageBox,
@@ -148,11 +154,18 @@ class TagEditorMainWindow(QMainWindow):
             action.triggered.connect(slot)
             toolbar.addAction(action)
 
+        add_action = QAction("批量添加标签", self)
+        add_action.triggered.connect(self.bulk_add_tags)
+        toolbar.addAction(add_action)
+
+        replace_action = QAction("批量替换标签", self)
+        replace_action.triggered.connect(self.bulk_replace_tag)
+        toolbar.addAction(replace_action)
+
         delete_action = QAction("批量删除标签", self)
         delete_action.triggered.connect(self.bulk_delete_tag)
         toolbar.addAction(delete_action)
 
-        self.action_undo = self.undo_stack.createUndoAction(self, "撤销")
         lock_all_action = QAction("锁定全部", self)
         lock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(True))
         toolbar.addAction(lock_all_action)
@@ -177,6 +190,7 @@ class TagEditorMainWindow(QMainWindow):
         export_button.setMenu(export_menu)
         toolbar.addWidget(export_button)
 
+        self.action_undo = self.undo_stack.createUndoAction(self, "撤销")
         self.action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         toolbar.addAction(self.action_undo)
 
@@ -272,6 +286,97 @@ class TagEditorMainWindow(QMainWindow):
         ]
         self._id_counter = itertools.count(len(self.current_tags) + 1)
         self.refresh_lists()
+
+    def _reload_current_tags(self, english_tags: List[str]) -> None:
+        self.initial_tags = english_tags[:]
+        translations = self.translator.translate_many(english_tags, "en", "zh")
+        self.current_tags = [
+            TagEntry(idx + 1, en, zh)
+            for idx, (en, zh) in enumerate(zip(english_tags, translations))
+        ]
+        self._id_counter = itertools.count(len(self.current_tags) + 1)
+        self.undo_stack.clear()
+        self.undo_stack.setClean()
+        self.refresh_lists()
+
+    def _prompt_bulk_add(self) -> Optional[Tuple[List[str], bool]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("批量添加标签")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        input_edit = QLineEdit(dialog)
+        form.addRow("待添加标签：", input_edit)
+        layout.addLayout(form)
+        hint = QLabel("多个标签可用逗号、空格或换行分隔。", dialog)
+        layout.addWidget(hint)
+        include_locked_box = QCheckBox("涉及已锁定的文件", dialog)
+        layout.addWidget(include_locked_box)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        raw = input_edit.text()
+        parts = [normalize(piece) for piece in re.split(r"[,\s]+", raw) if piece.strip()]
+        tags: List[str] = []
+        for item in parts:
+            if item and item not in tags:
+                tags.append(item)
+        if not tags:
+            QMessageBox.information(self, "批量添加标签", "未提供有效的标签。")
+            return None
+        return tags, include_locked_box.isChecked()
+
+    def _prompt_bulk_replace(self) -> Optional[Tuple[str, str, bool]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("批量替换标签")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        source_edit = QLineEdit(dialog)
+        target_edit = QLineEdit(dialog)
+        form.addRow("待替换标签：", source_edit)
+        form.addRow("目标标签：", target_edit)
+        layout.addLayout(form)
+        include_locked_box = QCheckBox("涉及已锁定的文件", dialog)
+        layout.addWidget(include_locked_box)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        source_tag = normalize(source_edit.text())
+        target_tag = normalize(target_edit.text())
+        if not source_tag or not target_tag:
+            QMessageBox.information(self, "批量替换标签", "请同时提供有效的原标签和目标标签。")
+            return None
+        if source_tag == target_tag:
+            QMessageBox.information(self, "批量替换标签", "原标签与目标标签相同，无需替换。")
+            return None
+        return source_tag, target_tag, include_locked_box.isChecked()
+
+    def _prompt_bulk_delete(self) -> Optional[Tuple[str, bool]]:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("批量删除标签")
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        tag_edit = QLineEdit(dialog)
+        form.addRow("待删除标签：", tag_edit)
+        layout.addLayout(form)
+        include_locked_box = QCheckBox("涉及已锁定的文件", dialog)
+        layout.addWidget(include_locked_box)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return None
+        tag = normalize(tag_edit.text())
+        if not tag:
+            QMessageBox.information(self, "批量删除标签", "未提供有效的标签。")
+            return None
+        return tag, include_locked_box.isChecked()
 
     def _parse_tag_text(self, text: str) -> List[str]:
         parts = text.replace("\n", ",").split(",")
@@ -476,23 +581,141 @@ class TagEditorMainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "导出已锁定标签", f"导出失败：{exc}")
 
+    def bulk_add_tags(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "批量添加标签", "当前没有可处理的文件。")
+            return
+        params = self._prompt_bulk_add()
+        if not params:
+            return
+        tags_to_add, include_locked = params
+
+        success = 0
+        already_present = 0
+        locked_skipped = 0
+        locked_modified = 0
+        failures: List[str] = []
+
+        for record in self.records:
+            locked = is_locked(record.tag_path)
+            if locked and not include_locked:
+                locked_skipped += 1
+                continue
+            try:
+                tags = read_tags(record.tag_path)
+            except OSError as exc:
+                failures.append(f"{record.base_name}: 读取失败（{exc}）")
+                continue
+            additions = [tag for tag in tags_to_add if tag not in tags]
+            if not additions:
+                already_present += 1
+                continue
+            new_tags = tags + additions
+            try:
+                write_tags(record.tag_path, new_tags)
+                record.locked = is_locked(record.tag_path)
+                success += 1
+                if locked:
+                    locked_modified += 1
+                if (
+                    self.current_record
+                    and record.tag_path.resolve() == self.current_record.tag_path.resolve()
+                ):
+                    self._reload_current_tags(new_tags)
+            except OSError as exc:
+                failures.append(f"{record.base_name}: 写入失败（{exc}）")
+
+        summary_lines = [
+            "批量添加标签完成。",
+            f"- 成功更新：{success} 个文件",
+            f"- 已包含全部标签：{already_present} 个文件",
+        ]
+        if include_locked:
+            summary_lines.append(f"- 涉及已锁定文件修改：{locked_modified} 个文件")
+        else:
+            summary_lines.append(f"- 被锁定跳过：{locked_skipped} 个文件")
+        summary_lines.append(f"- 写入失败：{len(failures)} 个文件")
+        if failures:
+            details = "\n".join(failures[:10])
+            summary_lines.append(f"\n失败详情（最多显示 10 条）：\n{details}")
+        QMessageBox.information(self, "批量添加标签", "\n".join(summary_lines))
+
+    def bulk_replace_tag(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "批量替换标签", "当前没有可处理的文件。")
+            return
+        params = self._prompt_bulk_replace()
+        if not params:
+            return
+        source_tag, target_tag, include_locked = params
+
+        success = 0
+        not_found = 0
+        locked_skipped = 0
+        locked_modified = 0
+        failures: List[str] = []
+
+        for record in self.records:
+            locked = is_locked(record.tag_path)
+            if locked and not include_locked:
+                locked_skipped += 1
+                continue
+            try:
+                tags = read_tags(record.tag_path)
+            except OSError as exc:
+                failures.append(f"{record.base_name}: 读取失败（{exc}）")
+                continue
+            if source_tag not in tags:
+                not_found += 1
+                continue
+            new_tags = [target_tag if tag == source_tag else tag for tag in tags]
+            try:
+                write_tags(record.tag_path, new_tags)
+                record.locked = is_locked(record.tag_path)
+                success += 1
+                if locked:
+                    locked_modified += 1
+                if (
+                    self.current_record
+                    and record.tag_path.resolve() == self.current_record.tag_path.resolve()
+                ):
+                    self._reload_current_tags(new_tags)
+            except OSError as exc:
+                failures.append(f"{record.base_name}: 写入失败（{exc}）")
+
+        summary_lines = [
+            f"批量替换标签完成：{source_tag} → {target_tag}",
+            f"- 成功更新：{success} 个文件",
+            f"- 未找到目标标签：{not_found} 个文件",
+        ]
+        if include_locked:
+            summary_lines.append(f"- 涉及已锁定文件修改：{locked_modified} 个文件")
+        else:
+            summary_lines.append(f"- 被锁定跳过：{locked_skipped} 个文件")
+        summary_lines.append(f"- 写入失败：{len(failures)} 个文件")
+        if failures:
+            details = "\n".join(failures[:10])
+            summary_lines.append(f"\n失败详情（最多显示 10 条）：\n{details}")
+        QMessageBox.information(self, "批量替换标签", "\n".join(summary_lines))
+
     def bulk_delete_tag(self) -> None:
         if not self.records:
             QMessageBox.information(self, "批量删除标签", "当前没有可处理的文件。")
             return
-        text, ok = QInputDialog.getText(self, "批量删除标签", "输入要删除的英文标签：")
-        if not ok:
+        params = self._prompt_bulk_delete()
+        if not params:
             return
-        target = normalize(text)
-        if not target:
-            return
+        target, include_locked = params
+
         success = 0
         skipped = 0
         locked_skipped = 0
+        locked_modified = 0
         failures: List[str] = []
 
         for record in self.records:
-            if is_locked(record.tag_path):
+            locked = is_locked(record.tag_path)
+            if locked and not include_locked:
                 locked_skipped += 1
                 continue
             try:
@@ -508,34 +731,30 @@ class TagEditorMainWindow(QMainWindow):
                 write_tags(record.tag_path, new_tags)
                 record.locked = is_locked(record.tag_path)
                 success += 1
+                if locked:
+                    locked_modified += 1
                 if (
                     self.current_record
                     and record.tag_path.resolve() == self.current_record.tag_path.resolve()
                 ):
-                    self.initial_tags = new_tags[:]
-                    translations = self.translator.translate_many(new_tags, "en", "zh")
-                    self.current_tags = [
-                        TagEntry(idx + 1, en, zh)
-                        for idx, (en, zh) in enumerate(zip(new_tags, translations))
-                    ]
-                    self._id_counter = itertools.count(len(self.current_tags) + 1)
-                    self.undo_stack.clear()
-                    self.undo_stack.setClean()
-                    self.refresh_lists()
+                    self._reload_current_tags(new_tags)
             except OSError as exc:
                 failures.append(f"{record.base_name}: 写入失败（{exc}）")
 
-        summary = (
-            f"删除标签“{target}”完成：\n"
-            f"- 成功处理：{success} 个文件\n"
-            f"- 未包含该标签：{skipped} 个文件\n"
-            f"- 已锁定跳过：{locked_skipped} 个文件\n"
-            f"- 操作失败：{len(failures)} 个文件"
-        )
+        summary_lines = [
+            f"删除标签“{target}”完成。",
+            f"- 成功更新：{success} 个文件",
+            f"- 未找到该标签：{skipped} 个文件",
+        ]
+        if include_locked:
+            summary_lines.append(f"- 涉及已锁定文件修改：{locked_modified} 个文件")
+        else:
+            summary_lines.append(f"- 被锁定跳过：{locked_skipped} 个文件")
+        summary_lines.append(f"- 写入失败：{len(failures)} 个文件")
         if failures:
-            failure_details = "\n".join(failures[:10])
-            summary += f"\n\n失败详情（最多列出10条）：\n{failure_details}"
-        QMessageBox.information(self, "批量删除标签", summary)
+            details = "\n".join(failures[:10])
+            summary_lines.append(f"\n失败详情（最多显示 10 条）：\n{details}")
+        QMessageBox.information(self, "批量删除标签", "\n".join(summary_lines))
 
     def open_index(self, index: int) -> None:
         if index < 0 or index >= len(self.records):
