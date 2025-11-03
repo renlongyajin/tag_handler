@@ -147,6 +147,18 @@ class TagEditorMainWindow(QMainWindow):
         toolbar.addAction(delete_action)
 
         self.action_undo = self.undo_stack.createUndoAction(self, "撤销")
+        lock_all_action = QAction("锁定全部", self)
+        lock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(True))
+        toolbar.addAction(lock_all_action)
+
+        unlock_all_action = QAction("解除全部锁定", self)
+        unlock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(False))
+        toolbar.addAction(unlock_all_action)
+
+        stats_action = QAction("锁定统计", self)
+        stats_action.triggered.connect(self._show_lock_stats)
+        toolbar.addAction(stats_action)
+
         self.action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         toolbar.addAction(self.action_undo)
 
@@ -298,7 +310,7 @@ class TagEditorMainWindow(QMainWindow):
 
     def toggle_lock_current(self) -> None:
         if not self.current_record:
-            QMessageBox.information(self, "锁定标签", "请先打开一个标签文件。")
+            QMessageBox.information(self, "标记标签", "请先打开一个标签文件。")
             return
         new_state = not self.current_locked
         if new_state and not self.undo_stack.isClean():
@@ -307,7 +319,7 @@ class TagEditorMainWindow(QMainWindow):
         try:
             set_locked(self.current_record.tag_path, new_state)
         except OSError as exc:
-            QMessageBox.warning(self, "锁定标签", f"操作失败：{exc}")
+            QMessageBox.warning(self, "标记标签", f"操作失败：{exc}")
             return
         self.current_locked = new_state
         self.records[self.current_index].locked = new_state
@@ -318,6 +330,66 @@ class TagEditorMainWindow(QMainWindow):
         self._apply_lock_state()
         self._update_status()
         self.statusBar().showMessage(icon_msg, 3000)
+
+    def _lock_or_unlock_all(self, locked: bool) -> None:
+        if not self.records:
+            QMessageBox.information(self, "批量锁定", "当前没有可操作的文件。")
+            return
+        if locked and not self.save_current_file(auto=True):
+            return
+        success = 0
+        failures = []
+        for record in self.records:
+            try:
+                set_locked(record.tag_path, locked)
+                record.locked = is_locked(record.tag_path)
+                success += 1
+            except OSError as exc:
+                failures.append(f"{record.base_name}: {exc}")
+        if self.current_record:
+            self.current_locked = is_locked(self.current_record.tag_path)
+            self.records[self.current_index].locked = self.current_locked
+        self._apply_lock_state()
+        self._update_status()
+        action = "锁定" if locked else "解锁"
+        total = len(self.records)
+        message = f"{action}完成：{success}/{total} 个文件已处理。"
+        if failures:
+            failure_list = "\n".join(failures[:10])
+            message += f"\n\n失败文件（最多显示 10 条）：\n{failure_list}"
+        QMessageBox.information(self, "批量锁定", message)
+
+    def _show_lock_stats(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "锁定统计", "当前没有可操作的文件。")
+            return
+        locked_files = []
+        unlocked_files = []
+        for record in self.records:
+            record.locked = is_locked(record.tag_path)
+            if record.locked:
+                locked_files.append(record.base_name)
+            else:
+                unlocked_files.append(record.base_name)
+        locked_count = len(locked_files)
+        unlocked_count = len(unlocked_files)
+        message_lines = [
+            f"已锁定：{locked_count} 个文件",
+            f"未锁定：{unlocked_count} 个文件",
+        ]
+        if locked_files:
+            message_lines.extend([
+                "",
+                "🔒 已锁定文件：",
+                "，".join(locked_files),
+            ])
+        if unlocked_files:
+            message_lines.extend([
+                "",
+                "🔓 未锁定文件：",
+                "，".join(unlocked_files),
+            ])
+        QMessageBox.information(self, "锁定统计", "".join(message_lines))
 
     def bulk_delete_tag(self) -> None:
         if not self.records:
