@@ -175,6 +175,10 @@ class TagEditorMainWindow(QMainWindow):
         range_lock_action.triggered.connect(self._lock_range_dialog)
         toolbar.addAction(range_lock_action)
 
+        delete_reindex_action = QAction("删除并重排", self)
+        delete_reindex_action.triggered.connect(self._delete_and_reindex)
+        toolbar.addAction(delete_reindex_action)
+
         unlock_all_action = QAction("解锁全部", self)
         unlock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(False))
         toolbar.addAction(unlock_all_action)
@@ -527,6 +531,97 @@ class TagEditorMainWindow(QMainWindow):
             failure_list = "\n".join(failures[:10])
             message += f"\n\n失败文件（最多显示 10 条）：\n{failure_list}"
         QMessageBox.information(self, "范围锁定", message)
+
+    def _delete_and_reindex(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "删除并重排", "当前没有可处理的文件。")
+            return
+        if not self.ensure_saved():
+            return
+        default_base = self.current_record.base_name if self.current_record else self.records[0].base_name
+        text, ok = QInputDialog.getText(
+            self,
+            "删除并重排",
+            "请输入要删除的序号（例如 051）：",
+            text=default_base,
+        )
+        if not ok:
+            return
+        base = text.strip()
+        if not base:
+            QMessageBox.information(self, "删除并重排", "未提供有效的序号。")
+            return
+        try:
+            target_idx = next(i for i, record in enumerate(self.records) if record.base_name == base)
+        except StopIteration:
+            QMessageBox.warning(self, "删除并重排", f"未找到名为 {base} 的文件。")
+            return
+        confirm = QMessageBox.question(
+            self,
+            "删除并重排",
+            f"确定要删除 {base} 及其所有同名文件并重排后续序号吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if confirm != QMessageBox.Yes:
+            return
+        folder = self.root_dir
+        if folder is None:
+            QMessageBox.warning(self, "删除并重排", "当前目录无效。")
+            return
+        deletion_errors: List[str] = []
+        for path in folder.iterdir():
+            if not path.is_file():
+                continue
+            name = path.name
+            if name == base or name.startswith(f"{base}."):
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    deletion_errors.append(f"{name}: {exc}")
+        if deletion_errors:
+            QMessageBox.warning(
+                self,
+                "删除并重排",
+                "删除文件时出现错误：\n" + "\n".join(deletion_errors[:10]),
+            )
+            return
+        rename_errors: List[str] = []
+        suffix_pattern = re.compile(r"^(.*?)(\d+)$")
+        for record in self.records[target_idx + 1:]:
+            old_base = record.base_name
+            if old_base.isdigit():
+                new_base = str(int(old_base) - 1).zfill(len(old_base))
+            else:
+                match = suffix_pattern.match(old_base)
+                if not match:
+                    rename_errors.append(f"{old_base}: 不支持的命名格式")
+                    continue
+                prefix, number = match.groups()
+                new_base = prefix + str(int(number) - 1).zfill(len(number))
+            for path in sorted(folder.iterdir()):
+                if not path.is_file():
+                    continue
+                if path.name == old_base or path.name.startswith(f"{old_base}."):
+                    new_name = new_base + path.name[len(old_base):]
+                    new_path = path.with_name(new_name)
+                    if new_path.exists():
+                        rename_errors.append(f"{path.name}: 目标 {new_name} 已存在")
+                        continue
+                    try:
+                        path.rename(new_path)
+                    except OSError as exc:
+                        rename_errors.append(f"{path.name}: {exc}")
+        self.load_directory(self.root_dir)
+        if self.records:
+            new_index = min(target_idx, len(self.records) - 1)
+            self.open_index(new_index)
+        if rename_errors:
+            QMessageBox.warning(
+                self,
+                "删除并重排",
+                "序号重排已完成，但部分文件未能重命名：\n" + "\n".join(rename_errors[:10]),
+            )
 
     def _lock_or_unlock_all(self, locked: bool) -> None:
         if not self.records:
