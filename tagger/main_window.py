@@ -187,11 +187,14 @@ class TagEditorMainWindow(QMainWindow):
         stats_action.triggered.connect(self._show_lock_stats)
         toolbar.addAction(stats_action)
 
+
         export_menu = QMenu("导出", self)
-        export_all_action = export_menu.addAction("导出全部标签文件")
-        export_all_action.triggered.connect(self._export_all_tags)
-        export_locked_action = export_menu.addAction("导出已锁定标签文件")
-        export_locked_action.triggered.connect(self._export_locked_tags)
+        export_all_json_action = export_menu.addAction("导出全部标签（JSON）")
+        export_all_json_action.triggered.connect(self._export_all_tags)
+        export_locked_json_action = export_menu.addAction("导出已锁定标签（JSON）")
+        export_locked_json_action.triggered.connect(self._export_locked_tags)
+        export_all_txt_action = export_menu.addAction("导出全部标签（TXT）")
+        export_all_txt_action.triggered.connect(self._export_all_tags_txt)
 
         export_button = QToolButton(self)
         export_button.setText("导出")
@@ -200,12 +203,14 @@ class TagEditorMainWindow(QMainWindow):
         toolbar.addWidget(export_button)
 
         self.action_undo = self.undo_stack.createUndoAction(self, "撤销")
+        self.action_undo = self.undo_stack.createUndoAction(self, "撤销")
         self.action_undo.setShortcut(QKeySequence("Ctrl+Z"))
         toolbar.addAction(self.action_undo)
 
         self.action_redo = self.undo_stack.createRedoAction(self, "重做")
         self.action_redo.setShortcut(QKeySequence("Ctrl+Shift+Z"))
         toolbar.addAction(self.action_redo)
+
 
         suffix_action = QAction("设置后缀", self)
         suffix_action.triggered.connect(self.set_tag_suffix)
@@ -666,8 +671,8 @@ class TagEditorMainWindow(QMainWindow):
         locked_count = len(locked_files)
         unlocked_count = len(unlocked_files)
         message_lines = [
-            f"已锁定：{locked_count} 个文件",
-            f"未锁定：{unlocked_count} 个文件",
+            f"已锁定：{locked_count} 个文件\n",
+            f"未锁定：{unlocked_count} 个文件\n",
         ]
         if locked_files:
             message_lines.extend([
@@ -714,6 +719,39 @@ class TagEditorMainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "导出标签", f"导出失败：{exc}")
 
+
+    def _export_all_tags_txt(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, "导出标签（TXT）", "当前没有可导出的文件。")
+            return
+        default_dir = str(self.root_dir or Path.cwd())
+        target_dir = QFileDialog.getExistingDirectory(self, "选择导出文件夹", default_dir)
+        if not target_dir:
+            return
+        target_path = Path(target_dir)
+        success = 0
+        failures: List[str] = []
+        for record in self.records:
+            if (
+                self.current_record
+                and record.tag_path.resolve() == self.current_record.tag_path.resolve()
+            ):
+                tags = [entry.english for entry in self.current_tags if entry.english.strip()]
+            else:
+                tags = read_tags(record.tag_path)
+            export_file = target_path / f"{record.base_name}.txt"
+            try:
+                export_file.write_text(", ".join(tags), encoding="utf-8")
+                success += 1
+            except OSError as exc:
+                failures.append(f"{record.base_name}: {exc}")
+        message = f"已导出 {success} 个文件到：\n{target_path}"
+        if failures:
+            failure_list = "\n".join(failures[:10])
+            message += f"\n\n以下文件导出失败（最多显示 10 条）：\n{failure_list}"
+        QMessageBox.information(self, "导出标签（TXT）", message)
+
+    
     def _export_locked_tags(self) -> None:
         locked_records = [
             record for record in self.records if is_locked(record.tag_path)
