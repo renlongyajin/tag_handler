@@ -114,6 +114,7 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_restore = QPushButton("恢复初始", buttons)
         self.btn_copy = QPushButton("复制当前标签", buttons)
         self.btn_paste = QPushButton("粘贴标签到当前", buttons)
+        self.btn_compact = QPushButton("精简标签", buttons)
         self.btn_toggle_lock = QPushButton("锁定标签", buttons)
         self.btn_next_unlocked = QPushButton("下一个未锁定", buttons)
         for btn in (
@@ -122,6 +123,7 @@ class TagEditorMainWindow(QMainWindow):
             self.btn_restore,
             self.btn_copy,
             self.btn_paste,
+            self.btn_compact,
             self.btn_toggle_lock,
             self.btn_next_unlocked,
         ):
@@ -188,7 +190,6 @@ class TagEditorMainWindow(QMainWindow):
         stats_action.triggered.connect(self._show_lock_stats)
         toolbar.addAction(stats_action)
 
-
         export_menu = QMenu("导出", self)
         export_all_json_action = export_menu.addAction("导出全部标签（JSON）")
         export_all_json_action.triggered.connect(self._export_all_tags)
@@ -198,8 +199,6 @@ class TagEditorMainWindow(QMainWindow):
         export_all_txt_action.triggered.connect(self._export_all_tags_txt)
         export_images_action = export_menu.addAction("导出全部图片")
         export_images_action.triggered.connect(self._export_all_images)
-
-
 
         export_button = QToolButton(self)
         export_button.setText("导出")
@@ -228,6 +227,7 @@ class TagEditorMainWindow(QMainWindow):
         self.btn_restore.clicked.connect(self.restore_initial)
         self.btn_copy.clicked.connect(self.copy_current_tags)
         self.btn_paste.clicked.connect(self.paste_tags_into_current)
+        self.btn_compact.clicked.connect(self._compact_current_tags)
         self.btn_toggle_lock.clicked.connect(self.toggle_lock_current)
         self.btn_next_unlocked.clicked.connect(self.open_next_unlocked)
         self.viewer.zoomChanged.connect(lambda _: self._update_status())
@@ -400,6 +400,80 @@ class TagEditorMainWindow(QMainWindow):
     def _parse_tag_text(self, text: str) -> List[str]:
         parts = text.replace("\n", ",").split(",")
         return [normalize(part) for part in parts if normalize(part)]
+
+
+    @staticmethod
+    def _normalize_tag_key(tag: str) -> str:
+        value = tag.strip().lower()
+        if len(value) > 3 and value.endswith('ies'):
+            return value[:-3] + 'y'
+        if len(value) > 3 and value.endswith(('ses', 'xes', 'zes', 'ches', 'shes')):
+            return value[:-2]
+        if len(value) > 3 and value.endswith('s') and not value.endswith('ss'):
+            return value[:-1]
+        return value
+
+    @staticmethod
+    def _is_plural_tag(tag: str) -> bool:
+        value = tag.strip().lower()
+        if len(value) > 3 and value.endswith('ies'):
+            return True
+        if len(value) > 3 and value.endswith(('ses', 'xes', 'zes', 'ches', 'shes')):
+            return True
+        if len(value) > 3 and value.endswith('s') and not value.endswith('ss'):
+            return True
+        return False
+
+    def _tags_equivalent(self, first: str, second: str) -> bool:
+        return self._normalize_tag_key(first) == self._normalize_tag_key(second)
+
+    def _can_accept_new_tag(self, english: str, exclude_entry_id: Optional[int] = None) -> bool:
+        key = self._normalize_tag_key(english)
+        for entry in self.current_tags:
+            if exclude_entry_id and entry.entry_id == exclude_entry_id:
+                continue
+            if self._normalize_tag_key(entry.english) == key:
+                return False
+        return True
+
+    def _deduplicate_tag_pairs(
+        self, pairs: List[Tuple[str, str]]
+    ) -> Tuple[List[Tuple[str, str]], bool]:
+        result: List[Tuple[str, str]] = []
+        seen: dict[str, int] = {}
+        changed = False
+        for english, chinese in pairs:
+            clean_en = english.strip()
+            clean_zh = chinese.strip()
+            if not clean_en:
+                changed = True
+                continue
+            key = self._normalize_tag_key(clean_en)
+            index = seen.get(key)
+            if index is None:
+                result.append((clean_en, clean_zh))
+                seen[key] = len(result) - 1
+                continue
+            existing_en, existing_zh = result[index]
+            if not self._is_plural_tag(existing_en) and self._is_plural_tag(clean_en):
+                result[index] = (clean_en, clean_zh)
+            changed = True
+        return result, changed
+
+    def _compact_current_tags(self) -> None:
+        if self.current_locked:
+            self._editing_locked_warning()
+            return
+        if not self.current_tags:
+            QMessageBox.information(self, "精简标签", "当前没有可精简的标签。")
+            return
+        pairs = [(entry.english, entry.chinese) for entry in self.current_tags]
+        deduped, changed = self._deduplicate_tag_pairs(pairs)
+        if not changed:
+            self.statusBar().showMessage("标签已处于精简状态。", 3000)
+            return
+        self.undo_stack.push(ReplaceAllTagsCommand(self, deduped))
+        self.statusBar().showMessage("已精简标签列表。", 3000)
 
     def _apply_lock_state(self) -> None:
         locked = self.current_locked
@@ -752,7 +826,7 @@ class TagEditorMainWindow(QMainWindow):
                 failures.append(f"{record.base_name}: {exc}")
         message = f'已导出 {success} 个文件到：\n{target_path}'
         if failures:
-            failure_list = "\n".join(failures[:10])
+            failure_list = '\n'.join(failures[:10])
             message += f'\n\n以下文件导出失败（最多显示 10 条）：\n{failure_list}'
         QMessageBox.information(self, '导出标签（TXT）', message)
 
@@ -787,7 +861,7 @@ class TagEditorMainWindow(QMainWindow):
         if missing:
             message_lines.append(f'\n缺失图片：{missing} 个（已跳过）')
         if failures:
-            failure_list = ''.join(failures[:10])
+            failure_list = '\n'.join(failures[:10])
             message_lines.append(f'\n以下图片导出失败（最多显示 10 条）：\n{failure_list}')
         QMessageBox.information(self, '导出图片', ''.join(message_lines))
 
@@ -1064,10 +1138,16 @@ class TagEditorMainWindow(QMainWindow):
         if not entry:
             return
         if field == "english":
+            if not self._can_accept_new_tag(new_text, exclude_entry_id=entry_id):
+                self.statusBar().showMessage('标签已存在（包含复数形式），修改被忽略。', 3000)
+                return
             chinese = self.translator.translate_one(new_text, "en", "zh")
             cmd = ModifyTagCommand(self, entry_id, entry.english, entry.chinese, new_text, chinese)
         else:
             english = self.translator.translate_one(new_text, "zh", "en")
+            if not self._can_accept_new_tag(english, exclude_entry_id=entry_id):
+                self.statusBar().showMessage('标签已存在（包含复数形式），修改被忽略。', 3000)
+                return
             cmd = ModifyTagCommand(self, entry_id, entry.english, entry.chinese, english, new_text)
         self.undo_stack.push(cmd)
 

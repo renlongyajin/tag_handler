@@ -38,7 +38,7 @@ class ModifyTagCommand(QUndoCommand):
 
 class AddTagCommand(QUndoCommand):
     def __init__(self, window: "TagEditorMainWindow", raw_text: str) -> None:
-        super().__init__("添加标签")
+        super().__init__("修改标签")
         self.window = window
         self.raw_text = raw_text
         self.entry: Optional[TagEntry] = None
@@ -58,9 +58,14 @@ class AddTagCommand(QUndoCommand):
                     chinese = english
             english = english.strip()
             chinese = chinese.strip()
+            if not self.window._can_accept_new_tag(english):
+                self.window.statusBar().showMessage("标签已存在（包含复数形式），已忽略。", 3000)
+                self.entry = None
+                return
             entry_id = self.window.next_entry_id()
             self.entry = TagEntry(entry_id, english, chinese)
-        self.window.insert_entry(self.entry)
+        if self.entry:
+            self.window.insert_entry(self.entry)
 
     def undo(self) -> None:
         if self.entry:
@@ -69,7 +74,7 @@ class AddTagCommand(QUndoCommand):
 
 class RemoveTagCommand(QUndoCommand):
     def __init__(self, window: "TagEditorMainWindow", entry: TagEntry, index: int) -> None:
-        super().__init__("删除标签")
+        super().__init__("修改标签")
         self.window = window
         self.entry = TagEntry(entry.entry_id, entry.english, entry.chinese)
         self.index = index
@@ -83,7 +88,7 @@ class RemoveTagCommand(QUndoCommand):
 
 class ReplaceAllTagsCommand(QUndoCommand):
     def __init__(self, window: "TagEditorMainWindow", new_pairs: List[Tuple[str, str]]) -> None:
-        super().__init__("替换全部标签")
+        super().__init__("修改标签")
         self.window = window
         self.new_pairs = [(english, chinese) for english, chinese in new_pairs]
         self.old_pairs = [
