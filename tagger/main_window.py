@@ -170,6 +170,10 @@ class TagEditorMainWindow(QMainWindow):
         delete_action.triggered.connect(self.bulk_delete_tag)
         toolbar.addAction(delete_action)
 
+        compact_all_action = QAction("批量精简标签", self)
+        compact_all_action.triggered.connect(self._compact_all_tags)
+        toolbar.addAction(compact_all_action)
+
         lock_all_action = QAction("锁定全部", self)
         lock_all_action.triggered.connect(lambda: self._lock_or_unlock_all(True))
         toolbar.addAction(lock_all_action)
@@ -221,6 +225,7 @@ class TagEditorMainWindow(QMainWindow):
         toolbar.addAction(suffix_action)
 
         self.setStatusBar(QStatusBar(self))
+    
     def _bind_signals(self) -> None:
         self.btn_add.clicked.connect(self._handle_add)
         self.btn_retranslate.clicked.connect(self._handle_retranslate)
@@ -438,15 +443,17 @@ class TagEditorMainWindow(QMainWindow):
 
     def _deduplicate_tag_pairs(
         self, pairs: List[Tuple[str, str]]
-    ) -> Tuple[List[Tuple[str, str]], bool]:
+    ) -> Tuple[List[Tuple[str, str]], bool, List[str]]:
         result: List[Tuple[str, str]] = []
         seen: dict[str, int] = {}
         changed = False
+        operations: List[str] = []
         for english, chinese in pairs:
             clean_en = english.strip()
             clean_zh = chinese.strip()
             if not clean_en:
                 changed = True
+                operations.append("移除空标签")
                 continue
             key = self._normalize_tag_key(clean_en)
             index = seen.get(key)
@@ -457,8 +464,11 @@ class TagEditorMainWindow(QMainWindow):
             existing_en, existing_zh = result[index]
             if not self._is_plural_tag(existing_en) and self._is_plural_tag(clean_en):
                 result[index] = (clean_en, clean_zh)
+                operations.append(f"使用复数形式：{existing_en} → {clean_en}")
+            else:
+                operations.append(f"移除重复标签：{clean_en}")
             changed = True
-        return result, changed
+        return result, changed, operations
 
     def _compact_current_tags(self) -> None:
         if self.current_locked:
@@ -468,11 +478,13 @@ class TagEditorMainWindow(QMainWindow):
             QMessageBox.information(self, "精简标签", "当前没有可精简的标签。")
             return
         pairs = [(entry.english, entry.chinese) for entry in self.current_tags]
-        deduped, changed = self._deduplicate_tag_pairs(pairs)
+        deduped, changed, operations = self._deduplicate_tag_pairs(pairs)
         if not changed:
             self.statusBar().showMessage("标签已处于精简状态。", 3000)
             return
         self.undo_stack.push(ReplaceAllTagsCommand(self, deduped))
+        if operations:
+            QMessageBox.information(self, "精简标签", "".join(operations))
         self.statusBar().showMessage("已精简标签列表。", 3000)
 
     def _apply_lock_state(self) -> None:
@@ -798,6 +810,49 @@ class TagEditorMainWindow(QMainWindow):
         except OSError as exc:
             QMessageBox.warning(self, "导出标签", f"导出失败：{exc}")
 
+
+    def _compact_all_tags(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, '批量精简标签', '当前没有可处理的文件。')
+            return
+        if not self.ensure_saved():
+            return
+        default_dir = str(self.root_dir or Path.cwd())
+        report_path, _ = QFileDialog.getSaveFileName(
+            self, '选择报告文件', default_dir, '文本文件 (*.txt);;所有文件 (*)'
+        )
+        if not report_path:
+            return
+        report_lines: List[str] = []
+        changed_files = 0
+        skipped_locked = 0
+        for record in self.records:
+            if record.locked and is_locked(record.tag_path):
+                skipped_locked += 1
+                report_lines.append(f'{record.base_name}: 跳过（已锁定）\n')
+                continue
+            tags = read_tags(record.tag_path)
+            pairs = [(tag, '') for tag in tags]
+            deduped, changed, operations = self._deduplicate_tag_pairs(pairs)
+            if not changed:
+                # report_lines.append(f'{record.base_name}: 无变化（{len(tags)} 项）')
+                continue
+            write_tags(record.tag_path, [en for en, _ in deduped])
+            changed_files += 1
+            report_lines.append(f'{record.base_name}: 精简完成 {len(tags)} → {len(deduped)}\n')
+            if operations:
+                report_lines.extend(['  - ' + op for op in operations])
+            if (
+                self.current_record
+                and record.tag_path.resolve() == self.current_record.tag_path.resolve()
+            ):
+                self._reload_current_tags([en for en, _ in deduped])
+        Path(report_path).write_text(''.join(report_lines), encoding='utf-8')
+        message = f'批量精简完成，修改 {changed_files} 个文件\n'
+        if skipped_locked:
+            message += f'，跳过锁定文件 {skipped_locked} 个\n'
+        QMessageBox.information(self, '批量精简标签', f"{message}报告已保存至：{report_path}\n")
+        self.statusBar().showMessage(message, 5000)
 
     def _export_all_tags_txt(self) -> None:
         if not self.records:
