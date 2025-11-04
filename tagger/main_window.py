@@ -1,6 +1,7 @@
 ﻿from __future__ import annotations
 
 import itertools
+import shutil
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -195,6 +196,10 @@ class TagEditorMainWindow(QMainWindow):
         export_locked_json_action.triggered.connect(self._export_locked_tags)
         export_all_txt_action = export_menu.addAction("导出全部标签（TXT）")
         export_all_txt_action.triggered.connect(self._export_all_tags_txt)
+        export_images_action = export_menu.addAction("导出全部图片")
+        export_images_action.triggered.connect(self._export_all_images)
+
+
 
         export_button = QToolButton(self)
         export_button.setText("导出")
@@ -722,10 +727,10 @@ class TagEditorMainWindow(QMainWindow):
 
     def _export_all_tags_txt(self) -> None:
         if not self.records:
-            QMessageBox.information(self, "导出标签（TXT）", "当前没有可导出的文件。")
+            QMessageBox.information(self, '导出标签（TXT）', '当前没有可导出的文件。')
             return
         default_dir = str(self.root_dir or Path.cwd())
-        target_dir = QFileDialog.getExistingDirectory(self, "选择导出文件夹", default_dir)
+        target_dir = QFileDialog.getExistingDirectory(self, '选择导出文件夹', default_dir)
         if not target_dir:
             return
         target_path = Path(target_dir)
@@ -741,17 +746,51 @@ class TagEditorMainWindow(QMainWindow):
                 tags = read_tags(record.tag_path)
             export_file = target_path / f"{record.base_name}.txt"
             try:
-                export_file.write_text(", ".join(tags), encoding="utf-8")
+                export_file.write_text(', '.join(tags), encoding='utf-8')
                 success += 1
             except OSError as exc:
                 failures.append(f"{record.base_name}: {exc}")
-        message = f"已导出 {success} 个文件到：\n{target_path}"
+        message = f'已导出 {success} 个文件到：\n{target_path}'
         if failures:
             failure_list = "\n".join(failures[:10])
-            message += f"\n\n以下文件导出失败（最多显示 10 条）：\n{failure_list}"
-        QMessageBox.information(self, "导出标签（TXT）", message)
+            message += f'\n\n以下文件导出失败（最多显示 10 条）：\n{failure_list}'
+        QMessageBox.information(self, '导出标签（TXT）', message)
 
-    
+    def _export_all_images(self) -> None:
+        if not self.records:
+            QMessageBox.information(self, '导出图片', '当前没有可导出的文件。')
+            return
+        image_records = [record for record in self.records if record.image_path]
+        if not image_records:
+            QMessageBox.information(self, '导出图片', '未找到任何图片文件。')
+            return
+        default_dir = str(self.root_dir or Path.cwd())
+        target_dir = QFileDialog.getExistingDirectory(self, '选择导出文件夹', default_dir)
+        if not target_dir:
+            return
+        target_path = Path(target_dir)
+        success = 0
+        failures: List[str] = []
+        missing = 0
+        for record in image_records:
+            image_path = record.image_path
+            if not image_path or not image_path.exists():
+                missing += 1
+                continue
+            destination = target_path / image_path.name
+            try:
+                shutil.copy2(image_path, destination)
+                success += 1
+            except OSError as exc:
+                failures.append(f"{image_path.name}: {exc}")
+        message_lines = [f'已导出 {success} 个图片文件到：', str(target_path)]
+        if missing:
+            message_lines.append(f'\n缺失图片：{missing} 个（已跳过）')
+        if failures:
+            failure_list = ''.join(failures[:10])
+            message_lines.append(f'\n以下图片导出失败（最多显示 10 条）：\n{failure_list}')
+        QMessageBox.information(self, '导出图片', ''.join(message_lines))
+
     def _export_locked_tags(self) -> None:
         locked_records = [
             record for record in self.records if is_locked(record.tag_path)
